@@ -118,7 +118,11 @@ const config = {
   },
   jellyfin: {
     url: persistentSettings.jellyfin?.url || envValue('JELLYFIN_URL'),
-    apiKey: persistentSettings.jellyfin?.apiKey || envValue('JELLYFIN_API_KEY')
+    apiKey: persistentSettings.jellyfin?.apiKey || envValue('JELLYFIN_API_KEY'),
+    // null means all libraries (the backwards-compatible default); [] means none.
+    libraryIds: Array.isArray(persistentSettings.jellyfin?.libraryIds)
+      ? persistentSettings.jellyfin.libraryIds
+      : null
   },
   tmdb: {
     apiKey: persistentSettings.tmdb?.apiKey || envValue('TMDB_API_KEY'),
@@ -367,13 +371,25 @@ app.get('/api/settings', (req, res) => {
     },
     jellyfin: {
       url: config.jellyfin.url || '',
-      apiKey: maskSecret(config.jellyfin.apiKey)
+      apiKey: maskSecret(config.jellyfin.apiKey),
+      libraryIds: config.jellyfin.libraryIds
     },
     pollInterval: config.pollInterval || 10000,
     slideshowInterval: config.slideshowInterval || 10000,
     displayScale: config.displayScale || 1.0,
     allowedRatings: config.allowedRatings || ['G', 'PG', 'PG-13', 'R', 'NC-17', 'NR']
   });
+});
+
+app.get('/api/jellyfin/libraries', async (req, res) => {
+  try {
+    if (!monitor.jellyfinClient) {
+      return res.status(400).json({ error: 'Jellyfin is not configured' });
+    }
+    res.json({ libraries: await monitor.jellyfinClient.getLibraries() });
+  } catch (error) {
+    res.status(502).json({ error: `Could not load Jellyfin libraries: ${error.message}` });
+  }
 });
 
 // Get display scale (for polling)
@@ -483,6 +499,9 @@ app.post('/api/settings', express.json(), async (req, res) => {
     config.kaleidescape.serverHost = keepIfAbsent(settings.kaleidescape?.serverHost, config.kaleidescape.serverHost);
     config.plex.url = keepIfAbsent(settings.plex?.url, config.plex.url);
     config.jellyfin.url = keepIfAbsent(settings.jellyfin?.url, config.jellyfin.url);
+    if (Array.isArray(settings.jellyfin?.libraryIds)) {
+      config.jellyfin.libraryIds = settings.jellyfin.libraryIds;
+    }
 
     if (settings.kaleidescape?.port !== undefined) {
       config.kaleidescape.port = parseInt(settings.kaleidescape.port) || 10000;
@@ -500,6 +519,7 @@ app.post('/api/settings', express.json(), async (req, res) => {
       config.allowedRatings = settings.allowedRatings || ['G', 'PG', 'PG-13', 'R', 'NC-17', 'NR'];
     }
 
+    let jellyfinActivated = false;
     if (settings.sources) {
       const wasEnabled = { ...config.sources };
       config.sources = {
@@ -519,9 +539,15 @@ app.post('/api/settings', express.json(), async (req, res) => {
 
       if (switchedOn.length > 0) {
         monitor.activateSources(switchedOn);
+        jellyfinActivated = switchedOn.includes('jellyfin');
       } else {
         monitor.rebuildCombinedLibrary();
       }
+    }
+
+    // Apply Jellyfin credentials and library selection without a restart.
+    if (settings.jellyfin && config.sources.jellyfin && !jellyfinActivated) {
+      monitor.activateSources(['jellyfin']);
     }
 
     console.log(`Settings updated - Display scale: ${config.displayScale}x, Allowed ratings: ${config.allowedRatings.join(', ')}`);

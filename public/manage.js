@@ -3,6 +3,8 @@
 let allMovies = [];
 let currentMovie = null;
 let renderedMovies = [];   // the filtered list currently drawn in the grid
+let savedJellyfinLibraryIds = null;
+let jellyfinLibrariesLoaded = false;
 
 // Load movies on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -512,6 +514,9 @@ async function openSettings() {
     document.getElementById('plex-token').value = settings.plex?.token || '';
     document.getElementById('jellyfin-url').value = settings.jellyfin?.url || '';
     document.getElementById('jellyfin-key').value = settings.jellyfin?.apiKey || '';
+    savedJellyfinLibraryIds = Array.isArray(settings.jellyfin?.libraryIds)
+      ? settings.jellyfin.libraryIds
+      : null;
 
     // Media system toggles (absent means enabled, matching the server default)
     document.getElementById('source-kaleidescape').checked = settings.sources?.kaleidescape !== false;
@@ -542,9 +547,36 @@ async function openSettings() {
     document.getElementById('rating-nr').checked = allowedRatings.includes('NR');
 
     document.getElementById('settings-modal').classList.add('active');
+    loadJellyfinLibraries();
   } catch (error) {
     console.error('Error loading settings:', error);
     alert('Error loading settings: ' + error.message);
+  }
+}
+
+async function loadJellyfinLibraries() {
+  const container = document.getElementById('jellyfin-libraries');
+  jellyfinLibrariesLoaded = false;
+  container.innerHTML = '<small style="color:#888;">Loading libraries…</small>';
+
+  try {
+    const response = await fetch('/api/jellyfin/libraries');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to load libraries');
+    jellyfinLibrariesLoaded = true;
+
+    if (!data.libraries.length) {
+      container.innerHTML = '<small style="color:#888;">No movie or TV libraries found.</small>';
+      return;
+    }
+
+    container.innerHTML = data.libraries.map(library => {
+      const checked = savedJellyfinLibraryIds === null || savedJellyfinLibraryIds.includes(library.id);
+      const type = library.collectionType === 'tvshows' ? 'TV shows' : 'Movies';
+      return `<label><input type="checkbox" class="jellyfin-library" value="${escapeHtml(library.id)}" ${checked ? 'checked' : ''}><span>${escapeHtml(library.name)} <small style="color:#888;">(${type})</small></span></label>`;
+    }).join('');
+  } catch (error) {
+    container.innerHTML = `<small style="color:#dc2626;">${escapeHtml(error.message)}. Save the server URL and API key first, then reopen settings.</small>`;
   }
 }
 
@@ -583,7 +615,10 @@ async function saveSettings(event) {
     },
     jellyfin: {
       url: document.getElementById('jellyfin-url').value,
-      apiKey: document.getElementById('jellyfin-key').value
+      apiKey: document.getElementById('jellyfin-key').value,
+      libraryIds: jellyfinLibrariesLoaded
+        ? Array.from(document.querySelectorAll('.jellyfin-library:checked')).map(input => input.value)
+        : savedJellyfinLibraryIds
     },
     // Convert seconds to milliseconds for server
     pollInterval: (parseInt(document.getElementById('poll-interval').value) || 10) * 1000,
